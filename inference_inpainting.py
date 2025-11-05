@@ -6,14 +6,20 @@ import torch
 from torchvision.transforms.functional import normalize
 from basicsr.utils import imwrite, img2tensor, tensor2img
 from basicsr.utils.download_util import load_file_from_url
-from basicsr.utils.misc import get_device
 from basicsr.utils.registry import ARCH_REGISTRY
 
 pretrain_model_url = 'https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/codeformer_inpainting.pth'
 
 if __name__ == '__main__':
-    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    device = get_device()
+    # Explicit device selection with MPS priority
+    if torch.backends.mps.is_available():
+        device = torch.device('mps')
+    elif torch.cuda.is_available():
+        device = torch.device('cuda')
+    else:
+        device = torch.device('cpu')
+    print(f"Selected device: {device.type}")
+
     parser = argparse.ArgumentParser()
 
     parser.add_argument('-i', '--input_path', type=str, default='./inputs/masked_faces', 
@@ -45,6 +51,9 @@ if __name__ == '__main__':
     net = ARCH_REGISTRY.get('CodeFormer')(dim_embd=512, codebook_size=512, n_head=8, n_layers=9, 
                                             connect_list=['32', '64', '128']).to(device)
     
+    # Debug: Model device
+    print(f"CodeFormer model device: {next(net.parameters()).device}")
+    
     # ckpt_path = 'weights/CodeFormer/codeformer.pth'
     ckpt_path = load_file_from_url(url=pretrain_model_url, 
                                     model_dir='weights/CodeFormer', progress=True, file_name=None)
@@ -63,6 +72,10 @@ if __name__ == '__main__':
         input_face = img2tensor(input_face / 255., bgr2rgb=True, float32=True)
         normalize(input_face, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True)
         input_face = input_face.unsqueeze(0).to(device)
+        
+        # Debug: Input tensor device
+        print(f"Input tensor device: {input_face.device}")
+        
         try:
             with torch.no_grad():
                 mask = torch.zeros(512, 512)
@@ -71,10 +84,17 @@ if __name__ == '__main__':
                 mask = mask.view(1, 1, 512, 512).to(device)
                 # w is fixed to 1, adain=False for inpainting
                 output_face = net(input_face, w=1, adain=False)[0]
+                
+                # Debug: Output tensor device
+                print(f"Output tensor device: {output_face.device}")
+                
                 output_face = (1-mask)*input_face + mask*output_face
                 save_face = tensor2img(output_face, rgb2bgr=True, min_max=(-1, 1))
             del output_face
-            torch.cuda.empty_cache()
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+            elif device.type == 'mps':
+                torch.mps.empty_cache()
         except Exception as error:
             print(f'\tFailed inference for CodeFormer: {error}')
             save_face = tensor2img(input_face, rgb2bgr=True, min_max=(-1, 1))
@@ -88,4 +108,3 @@ if __name__ == '__main__':
         imwrite(save_face, save_restore_path)
 
     print(f'\nAll results are saved in {result_root}')
-

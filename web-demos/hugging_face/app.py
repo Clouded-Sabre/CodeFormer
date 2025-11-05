@@ -4,8 +4,10 @@ https://huggingface.co/spaces/sczhou/CodeFormer
 """
 
 import sys
-sys.path.append('CodeFormer')
 import os
+import argparse # Import the argparse module for CLI options
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 import cv2
 import torch
 import torch.nn.functional as F
@@ -16,12 +18,29 @@ from torchvision.transforms.functional import normalize
 from basicsr.archs.rrdbnet_arch import RRDBNet
 from basicsr.utils import imwrite, img2tensor, tensor2img
 from basicsr.utils.download_util import load_file_from_url
-from basicsr.utils.misc import gpu_is_available, get_device
 from basicsr.utils.realesrgan_utils import RealESRGANer
 from basicsr.utils.registry import ARCH_REGISTRY
 
 from facelib.utils.face_restoration_helper import FaceRestoreHelper
 from facelib.utils.misc import is_gray
+
+
+# --- Command Line Argument Setup ---
+parser = argparse.ArgumentParser(description='CodeFormer Gradio Demo')
+parser.add_argument(
+    '--ip', 
+    type=str, 
+    default='127.0.0.1', 
+    help='Service IP address for Gradio demo launch (default: 127.0.0.1)'
+)
+parser.add_argument(
+    '--port', 
+    type=int, 
+    default=7860, 
+    help='Port number for Gradio demo launch (default: 7860)'
+)
+args = parser.parse_args()
+# -----------------------------------
 
 
 os.system("pip freeze")
@@ -42,32 +61,46 @@ if not os.path.exists('CodeFormer/weights/facelib/parsing_parsenet.pth'):
 if not os.path.exists('CodeFormer/weights/realesrgan/RealESRGAN_x2plus.pth'):
     load_file_from_url(url=pretrain_model_url['realesrgan'], model_dir='CodeFormer/weights/realesrgan', progress=True, file_name=None)
 
-# download images
-torch.hub.download_url_to_file(
-    'https://replicate.com/api/models/sczhou/codeformer/files/fa3fe3d1-76b0-4ca8-ac0d-0a925cb0ff54/06.png',
-    '01.png')
-torch.hub.download_url_to_file(
-    'https://replicate.com/api/models/sczhou/codeformer/files/a1daba8e-af14-4b00-86a4-69cec9619b53/04.jpg',
-    '02.jpg')
-torch.hub.download_url_to_file(
-    'https://replicate.com/api/models/sczhou/codeformer/files/542d64f9-1712-4de7-85f7-3863009a7c3d/03.jpg',
-    '03.jpg')
-torch.hub.download_url_to_file(
-    'https://replicate.com/api/models/sczhou/codeformer/files/a11098b0-a18a-4c02-a19a-9a7045d68426/010.jpg',
-    '04.jpg')
-torch.hub.download_url_to_file(
-    'https://replicate.com/api/models/sczhou/codeformer/files/7cf19c2c-e0cf-4712-9af8-cf5bdbb8d0ee/012.jpg',
-    '05.jpg')
+# --- Conditional download of example images ---
+example_images = {
+    '01.png': 'https://replicate.com/api/models/sczhou/codeformer/files/fa3fe3d1-76b0-4ca8-ac0d-0a925cb0ff54/06.png',
+    '02.jpg': 'https://replicate.com/api/models/sczhou/codeformer/files/a1daba8e-af14-4b00-86a4-69cec9619b53/04.jpg',
+    '03.jpg': 'https://replicate.com/api/models/sczhou/codeformer/files/542d64f9-1712-4de7-85f7-3863009a7c3d/03.jpg',
+    '04.jpg': 'https://replicate.com/api/models/sczhou/codeformer/files/a11098b0-a18a-4c02-a19a-9a7045d68426/010.jpg',
+    '05.jpg': 'https://replicate.com/api/models/sczhou/codeformer/files/7cf19c2c-e0cf-4712-9af8-cf5bdbb8d0ee/012.jpg'
+}
+
+for filename, url in example_images.items():
+    if not os.path.exists(filename):
+        print(f"Downloading example image: {filename}")
+        torch.hub.download_url_to_file(url, filename)
+    else:
+        print(f"Example image exists, skipping download: {filename}")
+# ---------------------------------------------
 
 def imread(img_path):
     img = cv2.imread(img_path)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     return img
 
+# --------------------------
+# M4/MPS Device Setup
+# --------------------------
+if torch.backends.mps.is_available():
+    device = torch.device("mps")
+    print("Using Apple MPS device (M4 GPU).")
+elif torch.cuda.is_available():
+    device = torch.device("cuda")
+    print("Using NVIDIA CUDA device.")
+else:
+    device = torch.device("cpu")
+    print("Using CPU.")
+
+
 # set enhancer with RealESRGAN
 def set_realesrgan():
-    # half = True if torch.cuda.is_available() else False
-    half = True if gpu_is_available() else False
+    # Use half precision (FP16) on MPS or CUDA
+    half = True if device.type != 'cpu' else False
     model = RRDBNet(
         num_in_ch=3,
         num_out_ch=3,
@@ -85,11 +118,20 @@ def set_realesrgan():
         pre_pad=0,
         half=half,
     )
+    
+    # --- MPS Fix ---
+    # Manually set device for RealESRGANer, as it defaults to CUDA
+    if device.type == 'mps':
+        print("Forcing RealESRGANer to use MPS device.")
+        upsampler.device = device
+        upsampler.model = upsampler.model.to(device)
+        if half:
+            upsampler.model = upsampler.model.half()
+    # -----------------
+            
     return upsampler
 
 upsampler = set_realesrgan()
-# device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-device = get_device()
 codeformer_net = ARCH_REGISTRY.get("CodeFormer")(
     dim_embd=512,
     codebook_size=1024,
@@ -98,7 +140,7 @@ codeformer_net = ARCH_REGISTRY.get("CodeFormer")(
     connect_list=["32", "64", "128", "256"],
 ).to(device)
 ckpt_path = "CodeFormer/weights/CodeFormer/codeformer.pth"
-checkpoint = torch.load(ckpt_path)["params_ema"]
+checkpoint = torch.load(ckpt_path, map_location=device)["params_ema"]
 codeformer_net.load_state_dict(checkpoint)
 codeformer_net.eval()
 
@@ -172,7 +214,15 @@ def inference(image, background_enhance, face_upsample, upscale, codeformer_fide
                     )[0]
                     restored_face = tensor2img(output, rgb2bgr=True, min_max=(-1, 1))
                 del output
-                torch.cuda.empty_cache()
+                
+                # --- MPS/CUDA Fix ---
+                # Device-aware cache clearing
+                if device.type == 'cuda':
+                    torch.cuda.empty_cache()
+                elif device.type == 'mps' and hasattr(torch.mps, 'empty_cache'):
+                    torch.mps.empty_cache()
+                # --------------------
+
             except RuntimeError as error:
                 print(f"Failed inference for CodeFormer: {error}")
                 restored_face = tensor2img(
@@ -236,48 +286,23 @@ If our work is useful for your research, please consider citing:
     booktitle = {NeurIPS},
     year = {2022}
 }
-```
 
-📋 **License**
+📋 License
 
-This project is licensed under <a rel="license" href="https://github.com/sczhou/CodeFormer/blob/master/LICENSE">S-Lab License 1.0</a>. 
-Redistribution and use for non-commercial purposes should follow this license.
+This project is licensed under <a rel="license" href="https://github.com/sczhou/CodeFormer/blob/master/LICENSE">S-Lab License 1.0</a>. Redistribution and use for non-commercial purposes should follow this license.
 
-📧 **Contact**
+📧 Contact
 
 If you have any questions, please feel free to reach me out at <b>shangchenzhou@gmail.com</b>.
 
-<div>
-    🤗 Find Me:
-    <a href="https://twitter.com/ShangchenZhou"><img style="margin-top:0.5em; margin-bottom:0.5em" src="https://img.shields.io/twitter/follow/ShangchenZhou?label=%40ShangchenZhou&style=social" alt="Twitter Follow"></a> 
-    <a href="https://github.com/sczhou"><img style="margin-top:0.5em; margin-bottom:2em" src="https://img.shields.io/github/followers/sczhou?style=social" alt="Github Follow"></a>
-</div>
+<div> 🤗 Find Me: <a href="https://twitter.com/ShangchenZhou"><img style="margin-top:0.5em; margin-bottom:0.5em" src="https://img.shields.io/twitter/follow/ShangchenZhou?label=%40ShangchenZhou&style=social" alt="Twitter Follow"></a> <a href="https://github.com/sczhou"><img style="margin-top:0.5em; margin-bottom:2em" src="https://img.shields.io/github/followers/sczhou?style=social" alt="Github Follow"></a> </div>
 
-<center><img src='https://visitor-badge-sczhou.glitch.me/badge?page_id=sczhou/CodeFormer' alt='visitors'></center>
-"""
+<center><img src='https://visitor-badge-sczhou.glitch.me/badge?page_id=sczhou/CodeFormer' alt='visitors'></center> """
 
-demo = gr.Interface(
-    inference, [
-        gr.inputs.Image(type="filepath", label="Input"),
-        gr.inputs.Checkbox(default=True, label="Background_Enhance"),
-        gr.inputs.Checkbox(default=True, label="Face_Upsample"),
-        gr.inputs.Number(default=2, label="Rescaling_Factor (up to 4)"),
-        gr.Slider(0, 1, value=0.5, step=0.01, label='Codeformer_Fidelity (0 for better quality, 1 for better identity)')
-    ], [
-        gr.outputs.Image(type="numpy", label="Output"),
-        gr.outputs.File(label="Download the output")
-    ],
-    title=title,
-    description=description,
-    article=article,       
-    examples=[
-        ['01.png', True, True, 2, 0.7],
-        ['02.jpg', True, True, 2, 0.7],
-        ['03.jpg', True, True, 2, 0.7],
-        ['04.jpg', True, True, 2, 0.1],
-        ['05.jpg', True, True, 2, 0.1]
-      ]
-    )
+demo = gr.Interface( fn=inference, inputs=[ gr.Image(type="filepath", label="Input"), gr.Checkbox(value=True, label="Background_Enhance"), gr.Checkbox(value=True, label="Face_Upsample"), gr.Number(value=2, label="Rescaling_Factor (up to 4)"), gr.Slider(0, 1, value=0.5, step=0.01, label='Codeformer_Fidelity (0 for better quality, 1 for better identity)') ], outputs=[ gr.Image(type="numpy", label="Output"), gr.File(label="Download the output") ], title=title, description=description, article=article, examples=[ ['01.png', True, True, 2, 0.7], ['02.jpg', True, True, 2, 0.7], ['03.jpg', True, True, 2, 0.7], ['04.jpg', True, True, 2, 0.1], ['05.jpg', True, True, 2, 0.1] ] )
 
-demo.queue(concurrency_count=2)
-demo.launch()
+demo.queue(default_concurrency_limit=2)
+
+#--- Use parsed arguments for launch ---
+
+demo.launch(server_name=args.ip, server_port=args.port)

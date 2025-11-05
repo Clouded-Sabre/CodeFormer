@@ -16,15 +16,27 @@ pretrain_model_url = {
     'restoration': 'https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/codeformer.pth',
 }
 
-def set_realesrgan():
+def set_realesrgan(args, allow_mps_upsampler=True):
     from basicsr.archs.rrdbnet_arch import RRDBNet
     from basicsr.utils.realesrgan_utils import RealESRGANer
 
+    # Determine whether to use fp16 (half) for RealESRGAN. Only enable for CUDA
+    # GPUs that are known to support f16 properly. Disable for CPU and MPS.
     use_half = False
-    if torch.cuda.is_available(): # set False in CPU/MPS mode
-        no_half_gpu_list = ['1650', '1660'] # set False for GPUs that don't support f16
-        if not True in [gpu in torch.cuda.get_device_name(0) for gpu in no_half_gpu_list]:
-            use_half = True
+    is_mps = hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+    if torch.cuda.is_available():  # CUDA only
+        no_half_gpu_list = ['1650', '1660']  # GPUs that don't support f16 well
+        try:
+            dev_name = torch.cuda.get_device_name(0)
+            if not any(gpu in dev_name for gpu in no_half_gpu_list):
+                use_half = True
+        except Exception:
+            use_half = False
+
+    # Optionally disable RealESRGAN upsampler on MPS if requested
+    if is_mps and not allow_mps_upsampler:
+        print("[INFO] RealESRGAN upsampler is disabled on MPS as per user flag.")
+        return None
 
     model = RRDBNet(
         num_in_ch=3,
@@ -43,41 +55,45 @@ def set_realesrgan():
         pre_pad=0,
         half=use_half
     )
-
-    if not gpu_is_available():  # CPU
+    # Warn only if neither CUDA nor MPS is available.
+    if not (torch.cuda.is_available() or is_mps):
         import warnings
         warnings.warn('Running on CPU now! Make sure your PyTorch version matches your CUDA.'
-                        'The unoptimized RealESRGAN is slow on CPU. '
-                        'If you want to disable it, please remove `--bg_upsampler` and `--face_upsample` in command.',
-                        category=RuntimeWarning)
+                      'The unoptimized RealESRGAN is slow on CPU. '
+                      'If you want to disable it, please remove `--bg_upsampler` and `--face_upsample` in command.',
+                      category=RuntimeWarning)
     return upsampler
 
+
+import time
+
 if __name__ == '__main__':
-    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     device = get_device()
+    print(f"[INFO] Using device: {device}")
     parser = argparse.ArgumentParser()
 
     parser.add_argument('-i', '--input_path', type=str, default='./inputs/whole_imgs', 
-            help='Input image, video or folder. Default: inputs/whole_imgs')
+        help='Input image, video or folder. Default: inputs/whole_imgs')
     parser.add_argument('-o', '--output_path', type=str, default=None, 
-            help='Output folder. Default: results/<input_name>_<w>')
+        help='Output folder. Default: results/<input_name>_<w>')
     parser.add_argument('-w', '--fidelity_weight', type=float, default=0.5, 
-            help='Balance the quality and fidelity. Default: 0.5')
+        help='Balance the quality and fidelity. Default: 0.5')
     parser.add_argument('-s', '--upscale', type=int, default=2, 
-            help='The final upsampling scale of the image. Default: 2')
+        help='The final upsampling scale of the image. Default: 2')
     parser.add_argument('--has_aligned', action='store_true', help='Input are cropped and aligned faces. Default: False')
     parser.add_argument('--only_center_face', action='store_true', help='Only restore the center face. Default: False')
     parser.add_argument('--draw_box', action='store_true', help='Draw the bounding box for the detected faces. Default: False')
     # large det_model: 'YOLOv5l', 'retinaface_resnet50'
     # small det_model: 'YOLOv5n', 'retinaface_mobile0.25'
     parser.add_argument('--detection_model', type=str, default='retinaface_resnet50', 
-            help='Face detector. Optional: retinaface_resnet50, retinaface_mobile0.25, YOLOv5l, YOLOv5n, dlib. \
-                Default: retinaface_resnet50')
+        help='Face detector. Optional: retinaface_resnet50, retinaface_mobile0.25, YOLOv5l, YOLOv5n, dlib. \
+        Default: retinaface_resnet50')
     parser.add_argument('--bg_upsampler', type=str, default='None', help='Background upsampler. Optional: realesrgan')
     parser.add_argument('--face_upsample', action='store_true', help='Face upsampler after enhancement. Default: False')
     parser.add_argument('--bg_tile', type=int, default=400, help='Tile size for background sampler. Default: 400')
     parser.add_argument('--suffix', type=str, default=None, help='Suffix of the restored faces. Default: None')
     parser.add_argument('--save_video_fps', type=float, default=None, help='Frame rate for saving video. Default: None')
+    parser.add_argument('--allow_mps_upsampler', action='store_true', help='Allow RealESRGAN upsampler on MPS (Apple Silicon). Default: False (disable on MPS)')
 
     args = parser.parse_args()
 
@@ -118,7 +134,7 @@ if __name__ == '__main__':
 
     # ------------------ set up background upsampler ------------------
     if args.bg_upsampler == 'realesrgan':
-        bg_upsampler = set_realesrgan()
+        bg_upsampler = set_realesrgan(args, allow_mps_upsampler=args.allow_mps_upsampler)
     else:
         bg_upsampler = None
 
@@ -127,18 +143,19 @@ if __name__ == '__main__':
         if bg_upsampler is not None:
             face_upsampler = bg_upsampler
         else:
-            face_upsampler = set_realesrgan()
+            face_upsampler = set_realesrgan(args, allow_mps_upsampler=args.allow_mps_upsampler)
     else:
         face_upsampler = None
 
     # ------------------ set up CodeFormer restorer -------------------
     net = ARCH_REGISTRY.get('CodeFormer')(dim_embd=512, codebook_size=1024, n_head=8, n_layers=9, 
                                             connect_list=['32', '64', '128', '256']).to(device)
-    
+    print(f"[INFO] Net first parameter device: {next(net.parameters()).device}")
     # ckpt_path = 'weights/CodeFormer/codeformer.pth'
     ckpt_path = load_file_from_url(url=pretrain_model_url['restoration'], 
                                     model_dir='weights/CodeFormer', progress=True, file_name=None)
-    checkpoint = torch.load(ckpt_path)['params_ema']
+    # Load checkpoint to CPU first to avoid device mapping errors on MPS/CUDA differences.
+    checkpoint = torch.load(ckpt_path, map_location='cpu')['params_ema']
     net.load_state_dict(checkpoint)
     net.eval()
 
@@ -163,6 +180,7 @@ if __name__ == '__main__':
 
     # -------------------- start to processing ---------------------
     for i, img_path in enumerate(input_img_list):
+        t0 = time.time()
         # clean all the intermediate results to process the next image
         face_helper.clean_all()
         
@@ -177,6 +195,7 @@ if __name__ == '__main__':
             print(f'[{i+1}/{test_img_num}] Processing: {img_name}')
             img = img_path
 
+        t1 = time.time()
         if args.has_aligned: 
             # the input faces are already cropped and aligned
             img = cv2.resize(img, (512, 512), interpolation=cv2.INTER_LINEAR)
@@ -192,6 +211,7 @@ if __name__ == '__main__':
             print(f'\tdetect {num_det_faces} faces')
             # align and warp each face
             face_helper.align_warp_face()
+        t2 = time.time()
 
         # face restoration for each cropped face
         for idx, cropped_face in enumerate(face_helper.cropped_faces):
@@ -199,19 +219,28 @@ if __name__ == '__main__':
             cropped_face_t = img2tensor(cropped_face / 255., bgr2rgb=True, float32=True)
             normalize(cropped_face_t, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True)
             cropped_face_t = cropped_face_t.unsqueeze(0).to(device)
+            print(f"[DEBUG] cropped_face_t device: {cropped_face_t.device}")
 
             try:
+                t3 = time.time()
                 with torch.no_grad():
                     output = net(cropped_face_t, w=w, adain=True)[0]
+                    print(f"[DEBUG] output device: {output.device}")
                     restored_face = tensor2img(output, rgb2bgr=True, min_max=(-1, 1))
                 del output
-                torch.cuda.empty_cache()
+                # Only clear CUDA cache when using CUDA; MPS has no torch.mps.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                t4 = time.time()
+                print(f"[TIMER] Inference time: {t4-t3:.3f}s")
             except Exception as error:
                 print(f'\tFailed inference for CodeFormer: {error}')
                 restored_face = tensor2img(cropped_face_t, rgb2bgr=True, min_max=(-1, 1))
 
             restored_face = restored_face.astype('uint8')
             face_helper.add_restored_face(restored_face, cropped_face)
+        t5 = time.time()
+        print(f"[TIMER] Preprocessing time: {t1-t0:.3f}s, Face detection/align: {t2-t1:.3f}s, Restoration: {t5-t2:.3f}s")
 
         # paste_back
         if not args.has_aligned:

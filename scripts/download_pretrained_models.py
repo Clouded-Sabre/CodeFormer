@@ -1,6 +1,9 @@
 import argparse
 import os
+import sys
 from os import path as osp
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from basicsr.utils.download_util import load_file_from_url
 

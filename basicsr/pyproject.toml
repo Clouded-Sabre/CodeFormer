@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=64", "wheel", "cython", "numpy", "torch>=2.0.0"]  # Update torch min for modern PyTorch; add wheel for builds
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "basicsr"
+dynamic = ["version"]
+description = "Open Source Image and Video Super-Resolution Toolbox"
+readme = "README.md"
+authors = [{name = "Xintao Wang", email = "xintao.wang@outlook.com"}]
+keywords = ["computer vision", "restoration", "super resolution"]
+license = {text = "Apache License 2.0"}  # Use SPDX instead of deprecated classifier
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",  # Add for your target version
+    "Programming Language :: Python :: 3.12",
+]
+requires-python = ">=3.7"
+dependencies = [  # From get_requirements(); update as needed for 3.11 compat
+    "addict",
+    "future",
+    "lmdb",
+    "numpy",
+    "opencv-python",
+    "Pillow",
+    "pyyaml",
+    "requests",
+    "scikit-image",
+    "scipy",
+    "tb-nightly",
+    "torch>=2.0.0",  # Bump for modern PyTorch/MPS
+    "torchvision",
+    "tqdm",
+    "yapf",
+    "lpips",
+]
+
+[tool.setuptools]
+include-package-data = true
+zip-safe = false
+
+[tool.setuptools.packages.find]
+exclude = ["options", "datasets", "experiments", "results", "tb_logger", "wandb"]
+
+[tool.setuptools.dynamic]
+version = {file = "basicsr/VERSION"}
+
+[project.urls]
+Homepage = "https://github.com/xinntao/BasicSR"
