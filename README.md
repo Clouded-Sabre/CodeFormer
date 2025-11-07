@@ -19,6 +19,12 @@ S-Lab, Nanyang Technological University
 
 :star: If CodeFormer is helpful to your images or projects, please help star this repo. Thanks! :hugs: 
 
+### Fork Objectives
+This is a fork of the original CodeFormer repository, with the following goals:
+- Port the project to work with modern Python versions (e.g., 3.11+) and the latest PyTorch for improved compatibility and performance.
+- Enhance support for MPS acceleration on Apple Silicon (M-series Macs), including device selection and debugging for inference scripts.
+- Modernize installation and setup processes, resolving deprecations and compatibility issues (e.g., removing optional dlib dependency due to build problems in newer environments).
+- Maintain core functionality while allowing for easier local development and integration (e.g., with tools like ComfyUI or Hugging Face demos).
 
 ### Update
 - **2023.07.20**: Integrated to :panda_face: [OpenXLab](https://openxlab.org.cn/apps). Try out online demo! [![OpenXLab](https://img.shields.io/badge/Demo-%F0%9F%90%BC%20OpenXLab-blue)](https://openxlab.org.cn/apps/detail/ShangchenZhou/CodeFormer)
@@ -56,8 +62,8 @@ S-Lab, Nanyang Technological University
 
 ### Dependencies and Installation
 
-- Pytorch >= 1.7.1
-- CUDA >= 10.1
+- Pytorch >= 2.0.0
+- CUDA >= 3.11
 - Other required packages in `requirements.txt`
 ```
 # git clone this repository
@@ -65,13 +71,15 @@ git clone https://github.com/sczhou/CodeFormer
 cd CodeFormer
 
 # create new anaconda env
-conda create -n codeformer python=3.8 -y
+conda create -n codeformer python=3.11 -y
 conda activate codeformer
 
-# install python dependencies
-pip3 install -r requirements.txt
-python basicsr/setup.py develop
-conda install -c conda-forge dlib (only for face detection or cropping with dlib)
+pip install -r requirements.txt
+cd basicsr
+python generate_version.py  # Generate version.py (required for basicsr imports)
+pip install -e .
+cd ..
+#conda install -c conda-forge dlib #(only for face detection or cropping with dlib). Do not execute this line because dlib installation breaks the compatibility unfortunately
 ```
 <!-- conda install -c conda-forge dlib -->
 
